@@ -13,8 +13,11 @@ pub struct Val {
     pub name: String,
     pub data: Data,
     pub grad: RefCell<Data>,
-    pub children: Vec<Rc<Val>>,
-    pub op: Box<dyn Backprop>,
+    pub op: Box<dyn Op>,
+}
+
+pub trait Op: Backprop {
+    fn get_inputs(&self) -> Vec<&Val>;
 }
 
 pub trait Backprop: std::fmt::Display {
@@ -30,6 +33,12 @@ impl Backprop for Add {
     fn backward(&self, grad: Data) {
         self.left.add_grad(grad);
         self.right.add_grad(grad);
+    }
+}
+
+impl Op for Add {
+    fn get_inputs(&self) -> Vec<&Val> {
+        vec![self.left.as_ref(), self.right.as_ref()]
     }
 }
 
@@ -50,6 +59,12 @@ impl Backprop for Mul {
     fn backward(&self, grad: Data) {
         self.left.add_grad(grad * self.right.data);
         self.right.add_grad(grad * self.left.data);
+    }
+}
+
+impl Op for Mul {
+    fn get_inputs(&self) -> Vec<&Val> {
+        vec![self.left.as_ref(), self.right.as_ref()]
     }
 }
 
@@ -75,6 +90,12 @@ impl Backprop for Relu {
     }
 }
 
+impl Op for Relu {
+    fn get_inputs(&self) -> Vec<&Val> {
+        vec![self.value.as_ref()]
+    }
+}
+
 impl fmt::Display for Relu {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "= ReLU({})", self.value.data)
@@ -86,6 +107,12 @@ struct Noop {}
 impl Backprop for Noop {
     fn backward(&self, _: Data) {
         ()
+    }
+}
+
+impl Op for Noop {
+    fn get_inputs(&self) -> Vec<&Val> {
+        vec![]
     }
 }
 
@@ -108,8 +135,9 @@ pub fn topological_sort(v: &Val) -> Vec<&Val> {
     while stack.len() > 0 {
         // last is guaranteed to be Some
         // due to the condition in the line above
-        let head = stack.last().unwrap();
-        let next = head.children.iter().find(|c| !visited.contains(&c.id));
+        let head = *stack.last().unwrap();
+        let inputs = head.op.get_inputs(); 
+        let next = inputs.iter().find(|c| !visited.contains(&c.id));
         if let Some(h) = next {
             stack.push(h);
             visited.insert(h.id);
@@ -127,8 +155,7 @@ impl Val {
     pub fn make(
         v: Data,
         name: Option<String>,
-        op: Box<dyn Backprop>,
-        children: Vec<Rc<Val>>,
+        op: Box<dyn Op>,
     ) -> Val {
         let id = OBJECT_COUNTER.fetch_add(1, Ordering::SeqCst);
         Val {
@@ -136,22 +163,20 @@ impl Val {
             name: name.unwrap_or(id.to_string()),
             data: v,
             grad: RefCell::new(0.),
-            children,
             op,
         }
     }
 
-    #[allow(dead_code)]
     pub fn new(v: Data) -> Val {
-        Val::make(v, None, Box::new(NOOP), vec![])
+        Val::make(v, None, Box::new(NOOP))
     }
 
     pub fn named(v: Data, name: &str) -> Val {
-        Val::make(v, Some(String::from(name)), Box::new(NOOP), vec![])
+        Val::make(v, Some(String::from(name)), Box::new(NOOP))
     }
 
-    pub fn from_op(v: Data, children: Vec<Rc<Val>>, op: Box<dyn Backprop>) -> Val {
-        Val::make(v, None, op, children)
+    pub fn from_op(v: Data, op: Box<dyn Op>) -> Val {
+        Val::make(v, None, op)
     }
 
     pub fn add_grad(&self, delta_grad: Data) {
@@ -159,8 +184,8 @@ impl Val {
     }
 
     pub fn relu(self) -> Val {
-        let rcself = Rc::new(self);
-        Val::from_op(relu(rcself.data), vec![rcself.clone()], Box::new(Relu { value: rcself}))
+        let data = self.data;
+        Val::from_op(relu(data), Box::new(Relu { value: Rc::new(self)}))
     }
 
     pub fn backward(&self) {
@@ -191,7 +216,6 @@ impl ops::Mul for Val {
         let right = Rc::new(_rhs);
         Val::from_op(
             left.data * right.data,
-            vec![left.clone(), right.clone()],
             Box::new(Mul { left, right }),
         )
     }
@@ -213,7 +237,6 @@ impl ops::Add for Val {
         let right = Rc::new(_rhs);
         Val::from_op(
             left.data + right.data,
-            vec![left.clone(), right.clone()],
             Box::new(Add { left, right }),
         )
     }
@@ -229,6 +252,8 @@ impl ops::Add<f64> for Val {
 
 #[cfg(test)]
 mod test {
+
+    use std::rc::Rc;
 
     use crate::engine::{topological_sort, Val};
 
@@ -264,6 +289,16 @@ mod test {
     #[test]
     fn test_scalar_mul() {
         assert_eq!((Val::new(7.) * 6.).data, 42.);
+    }
+
+    #[test]
+    fn test_relu_pos() {
+        assert_eq!(Val::new(10.).relu().data, 10.);
+    }
+
+    #[test]
+    fn test_relu_neg() {
+        assert_eq!(Val::new(-10.).relu().data, 0.);
     }
 
     #[test]
