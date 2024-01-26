@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     collections::HashSet,
-    fmt,
+    fmt::{self, Display},
     ops::{self, Deref},
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
@@ -13,7 +13,7 @@ pub struct Value {
     pub id: usize,
     pub data: Data,
     pub grad: RefCell<Data>,
-    pub expr: Expr,
+    pub expr: Box<dyn Backprop>,
 }
 
 #[derive(Clone)]
@@ -30,7 +30,7 @@ pub enum Expr {
     Relu(Node),
 }
 
-pub trait Backprop: std::fmt::Display {
+pub trait Backprop: Display {
     fn backward(&self, grad: Data);
     fn get_inputs(&self) -> Vec<&Node>;
 }
@@ -113,22 +113,26 @@ pub fn topological_sort(v: &Node) -> Vec<&Node> {
 static OBJECT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 impl Value {
-    pub fn make(data: Data, op: Expr) -> Value {
+    pub fn make(data: Data, expr: Box<dyn Backprop>) -> Value {
         let id = OBJECT_COUNTER.fetch_add(1, Ordering::SeqCst);
         Value {
             id,
             data,
             grad: RefCell::new(0.),
-            expr: op,
+            expr,
         }
     }
 
     pub fn new(v: Data) -> Value {
-        Value::make(v, Expr::Leaf)
+        Value::make(v, Box::new(Expr::Leaf))
     }
 
-    pub fn from_op(v: Data, op: Expr) -> Value {
+    pub fn from_op(v: Data, op: Box<dyn Backprop>) -> Value {
         Value::make(v, op)
+    }
+
+    pub fn grad(&self) -> Data {
+        *(self.grad.borrow())
     }
 
     pub fn add_grad(&self, delta_grad: Data) {
@@ -140,7 +144,7 @@ impl Value {
     }
 
     pub fn backward(&self) {
-        self.expr.backward(*(self.grad.borrow()));
+        self.expr.backward(self.grad());
     }
 }
 
@@ -191,12 +195,23 @@ impl Node {
         }
     }
 
-    pub fn relu(&self) -> Node {
-        let data = self.data;
-        let name = self.id.to_string();
+    pub fn constant(&self) -> Node {
         Node {
-            node: Rc::new(Value::from_op(relu(data), Expr::Relu(self.clone()))),
-            name,
+            node: Rc::new(Value::from_op(
+                self.data,
+                Box::new(Expr::Const(self.clone())),
+            )),
+            name: self.id.to_string(),
+        }
+    }
+
+    pub fn relu(&self) -> Node {
+        Node {
+            node: Rc::new(Value::from_op(
+                relu(self.data),
+                Box::new(Expr::Relu(self.clone())),
+            )),
+            name: self.id.to_string(),
         }
     }
 
@@ -245,7 +260,7 @@ impl ops::Mul for &Node {
     fn mul(self, _rhs: &Node) -> Node {
         Node::from(Value::from_op(
             self.data * _rhs.data,
-            Expr::Mul(self.clone(), _rhs.clone()),
+            Box::new(Expr::Mul(self.clone(), _rhs.clone())),
         ))
     }
 }
@@ -288,11 +303,9 @@ impl ops::Add<&Node> for Node {
 impl ops::Add for &Node {
     type Output = Node;
     fn add(self, _rhs: &Node) -> Node {
-        let left = self;
-        let right = _rhs;
         Node::from(Value::from_op(
-            left.data + right.data,
-            Expr::Add(left.clone(), right.clone()),
+            self.data + _rhs.data,
+            Box::new(Expr::Add(self.clone(), _rhs.clone())),
         ))
     }
 }
