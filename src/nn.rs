@@ -78,6 +78,8 @@ impl Display for Neuron {
 
 #[cfg(test)]
 mod test {
+    use crate::engine::Node;
+
     use super::Neuron;
 
     #[test]
@@ -96,5 +98,23 @@ mod test {
             + bias;
 
         assert_eq!(computed_output, actual_output);
+    }
+
+    #[test]
+    fn test_neuron_update() {
+        let node0 = Node::new(1.);
+        let inputs = vec![node0.clone(), Node::new(2.), Node::new(3.)];
+        let weights = vec![Node::new(2.), Node::new(3.), Node::new(4.)];
+        let bias = Node::new(0.);
+
+        let mut n = Neuron::new(inputs, weights, bias);
+        let computed_output = n.output.data();
+        assert_eq!(computed_output, 20.);
+
+        n.output.mark_output();
+        n.output.backward();
+        n.output.update();
+        assert_eq!(node0.grad(), 2.);
+        assert_eq!(node0.data(), 3.);
     }
 }
