@@ -105,7 +105,7 @@ pub fn topological_sort(v: &Node) -> Vec<&Node> {
             visited.insert(h.id);
             continue;
         }
-        topo.push(&head);
+        topo.push(head);
         stack.pop();
     }
     topo
@@ -186,24 +186,24 @@ impl Node {
         Node::from(Value::new(v))
     }
 
-    pub fn from(v: Value) -> Node {
-        let name = v.id.to_string();
+    fn make(v: Value, name: String) -> Node {
         Node {
             node: Rc::new(v),
-            name,
-            train_state: None,
-        }
-    }
-
-    pub fn named(v: Data, name: &str) -> Node {
-        Node {
-            node: Rc::new(Value::new(v)),
             name: name.to_string(),
             train_state: None,
         }
     }
 
-    pub fn name(&mut self, name: &str) -> Node {
+    pub fn from(v: Value) -> Node {
+        let name = v.id.to_string();
+        Node::make(v, name)
+    }
+
+    pub fn named(v: Data, name: &str) -> Node {
+        Node::make(Value::new(v), name.to_string())
+    }
+
+    pub fn name(&self, name: &str) -> Node {
         Node {
             node: self.node.clone(),
             name: name.to_string(),
@@ -212,25 +212,17 @@ impl Node {
     }
 
     pub fn constant(&self) -> Node {
-        Node {
-            node: Rc::new(Value::from_op(
-                self.data(),
-                Box::new(Expr::Const(self.clone())),
-            )),
-            name: self.id.to_string(),
-            train_state: None,
-        }
+        Node::from(Value::from_op(
+            self.data(),
+            Box::new(Expr::Const(self.clone())),
+        ))
     }
 
     pub fn relu(&self) -> Node {
-        Node {
-            node: Rc::new(Value::from_op(
-                relu(self.data()),
-                Box::new(Expr::Relu(self.clone())),
-            )),
-            name: self.id.to_string(),
-            train_state: None,
-        }
+        Node::from(Value::from_op(
+            relu(self.data()),
+            Box::new(Expr::Relu(self.clone())),
+        ))
     }
 
     pub fn backward(&mut self) {
@@ -241,7 +233,8 @@ impl Node {
         for v in topo.iter() {
             v.set_grad(0.);
         }
-        self.set_grad(1.);
+        let output = &self.node;
+        output.set_grad(1.);
         for v in topo.iter().rev() {
             v.node.backward();
         }
@@ -414,6 +407,6 @@ mod test {
         // forward pass went well
         assert_eq!(y.data(), -20.);
         // backward pass went well
-        assert_eq!(*(x.grad.borrow()), 46.);
+        assert_eq!(x.grad(), 46.);
     }
 }
