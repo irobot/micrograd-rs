@@ -11,7 +11,7 @@ type Data = f64;
 
 pub struct Value {
     pub id: usize,
-    pub data: Data,
+    pub data: RefCell<Data>,
     pub grad: RefCell<Data>,
     pub expr: Box<dyn Backprop>,
 }
@@ -20,6 +20,7 @@ pub struct Value {
 pub struct Node {
     pub node: Rc<Value>,
     pub name: String,
+    pub train_state: Option<Vec<Node>>,
 }
 
 pub enum Expr {
@@ -43,11 +44,11 @@ impl Backprop for Expr {
                 right.add_grad(grad);
             }
             Expr::Mul(left, right) => {
-                left.add_grad(grad * right.data);
-                right.add_grad(grad * left.data);
+                left.add_grad(grad * right.data());
+                right.add_grad(grad * left.data());
             }
             Expr::Relu(input) => {
-                let d = if input.data >= 0. { 1. } else { 0. };
+                let d = if input.data() >= 0. { 1. } else { 0. };
                 input.add_grad(grad * d)
             }
             Expr::Const(_) => (),
@@ -68,10 +69,10 @@ impl Backprop for Expr {
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Expr::Relu(input) => write!(f, "= ReLU({})", input.data),
-            Expr::Add(left, right) => write!(f, "= {} + {}", left.data, right.data),
-            Expr::Mul(left, right) => write!(f, "= {} * {}", left.data, right.data),
-            Expr::Const(v) => write!(f, "{}", v.data),
+            Expr::Relu(input) => write!(f, "= ReLU({})", input.data()),
+            Expr::Add(left, right) => write!(f, "= {} + {}", left.data(), right.data()),
+            Expr::Mul(left, right) => write!(f, "= {} * {}", left.data(), right.data()),
+            Expr::Const(v) => write!(f, "{}", v.data()),
             Expr::Leaf => Result::Ok(()),
         }
     }
@@ -117,7 +118,7 @@ impl Value {
         let id = OBJECT_COUNTER.fetch_add(1, Ordering::SeqCst);
         Value {
             id,
-            data,
+            data: RefCell::new(data),
             grad: RefCell::new(0.),
             expr,
         }
@@ -143,6 +144,14 @@ impl Value {
         *self.grad.borrow_mut() = grad;
     }
 
+    pub fn data(&self) -> Data {
+        *self.data.borrow()
+    }
+
+    pub fn update(&self) {
+        *(self.data.borrow_mut()) += self.grad();
+    }
+
     pub fn backward(&self) {
         self.expr.backward(self.grad());
     }
@@ -154,7 +163,10 @@ impl fmt::Display for Node {
         write!(
             f,
             "{} => Value({} {}, grad={})",
-            self.name, self.data, self.expr, grad
+            self.name,
+            self.data(),
+            self.expr,
+            grad
         )
     }
 }
@@ -164,6 +176,7 @@ impl Default for Node {
         Self {
             node: Rc::new(Value::new(0.)),
             name: Default::default(),
+            train_state: None,
         }
     }
 }
@@ -178,6 +191,7 @@ impl Node {
         Node {
             node: Rc::new(v),
             name,
+            train_state: None,
         }
     }
 
@@ -185,6 +199,7 @@ impl Node {
         Node {
             node: Rc::new(Value::new(v)),
             name: name.to_string(),
+            train_state: None,
         }
     }
 
@@ -192,31 +207,37 @@ impl Node {
         Node {
             node: self.node.clone(),
             name: name.to_string(),
+            train_state: None,
         }
     }
 
     pub fn constant(&self) -> Node {
         Node {
             node: Rc::new(Value::from_op(
-                self.data,
+                self.data(),
                 Box::new(Expr::Const(self.clone())),
             )),
             name: self.id.to_string(),
+            train_state: None,
         }
     }
 
     pub fn relu(&self) -> Node {
         Node {
             node: Rc::new(Value::from_op(
-                relu(self.data),
+                relu(self.data()),
                 Box::new(Expr::Relu(self.clone())),
             )),
             name: self.id.to_string(),
+            train_state: None,
         }
     }
 
-    pub fn backward(&self) {
-        let topo = topological_sort(self);
+    pub fn backward(&mut self) {
+        if self.train_state.is_none() {
+            return;
+        }
+        let topo = self.train_state.as_deref().unwrap();
         for v in topo.iter() {
             v.set_grad(0.);
         }
@@ -224,6 +245,18 @@ impl Node {
         for v in topo.iter().rev() {
             v.node.backward();
         }
+    }
+
+    pub fn update(&self) {
+        let topo = self.train_state.as_deref().unwrap();
+        for v in topo.iter() {
+            v.node.update();
+        }
+    }
+
+    pub fn mark_output(&mut self) {
+        let sorted = topological_sort(self);
+        self.train_state = Some(sorted.iter().map(|n| n.to_owned().clone()).collect());
     }
 }
 
@@ -259,7 +292,7 @@ impl ops::Mul for &Node {
     type Output = Node;
     fn mul(self, _rhs: &Node) -> Node {
         Node::from(Value::from_op(
-            self.data * _rhs.data,
+            self.data() * _rhs.data(),
             Box::new(Expr::Mul(self.clone(), _rhs.clone())),
         ))
     }
@@ -304,7 +337,7 @@ impl ops::Add for &Node {
     type Output = Node;
     fn add(self, _rhs: &Node) -> Node {
         Node::from(Value::from_op(
-            self.data + _rhs.data,
+            self.data() + _rhs.data(),
             Box::new(Expr::Add(self.clone(), _rhs.clone())),
         ))
     }
@@ -350,22 +383,22 @@ mod test {
 
     #[test]
     fn test_scalar_add() {
-        assert_eq!((Node::new(1.) + 2.).data, 3.);
+        assert_eq!((Node::new(1.) + 2.).data(), 3.);
     }
 
     #[test]
     fn test_scalar_mul() {
-        assert_eq!((Node::new(7.) * 6.).data, 42.);
+        assert_eq!((Node::new(7.) * 6.).data(), 42.);
     }
 
     #[test]
     fn test_relu_pos() {
-        assert_eq!(Node::new(10.).relu().data, 10.);
+        assert_eq!(Node::new(10.).relu().data(), 10.);
     }
 
     #[test]
     fn test_relu_neg() {
-        assert_eq!(Node::new(-10.).relu().data, 0.);
+        assert_eq!(Node::new(-10.).relu().data(), 0.);
     }
 
     #[test]
@@ -374,11 +407,12 @@ mod test {
         let z = ((&x * 2.0).name("z0") + (&x + 2.).name("z1")).name("z");
         let q = (&z.relu() + (&z * &x).name("q1")).name("q");
         let h = ((&z * &z).relu()).name("h");
-        let y = ((h + &q).name("y0") + (q * &x).name("y1")).name("y");
+        let mut y = ((h + &q).name("y0") + (q * &x).name("y1")).name("y");
+        y.mark_output();
         y.backward();
 
         // forward pass went well
-        assert_eq!(y.data, -20.);
+        assert_eq!(y.data(), -20.);
         // backward pass went well
         assert_eq!(*(x.grad.borrow()), 46.);
     }
