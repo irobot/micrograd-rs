@@ -7,7 +7,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-type Data = f64;
+pub type Data = f64;
 
 pub struct Value {
     pub id: usize,
@@ -25,18 +25,41 @@ pub struct Node {
 
 pub enum Expr {
     Leaf,
-    Const(Node),
     Add(Node, Node),
     Mul(Node, Node),
     Relu(Node),
 }
 
 pub trait Backprop: Display {
+    fn eval(&self) -> Data;
     fn backward(&self, grad: Data);
     fn get_inputs(&self) -> Vec<&Node>;
+    fn is_leaf(&self) -> bool;
 }
 
 impl Backprop for Expr {
+    fn eval(&self) -> Data {
+        match self {
+            Expr::Add(left, right) => left.data() + right.data(),
+            Expr::Mul(left, right) => left.data() * right.data(),
+            Expr::Relu(inp) => {
+                if inp.data() > 0. {
+                    inp.data()
+                } else {
+                    0.
+                }
+            }
+            Expr::Leaf => 0.,
+        }
+    }
+
+    fn is_leaf(&self) -> bool {
+        match self {
+            Expr::Leaf => true,
+            _ => false,
+        }
+    }
+
     fn backward(&self, grad: Data) {
         match self {
             Expr::Add(left, right) => {
@@ -51,16 +74,15 @@ impl Backprop for Expr {
                 let d = if input.data() >= 0. { 1. } else { 0. };
                 input.add_grad(grad * d)
             }
-            Expr::Const(_) => (),
             Expr::Leaf => (),
         }
     }
+
     fn get_inputs(&self) -> Vec<&Node> {
         match self {
             Expr::Add(left, right) => vec![left, right],
             Expr::Mul(left, right) => vec![left, right],
             Expr::Relu(input) => vec![input],
-            Expr::Const(_) => vec![],
             Expr::Leaf => vec![],
         }
     }
@@ -72,41 +94,32 @@ impl fmt::Display for Expr {
             Expr::Relu(input) => write!(f, "= ReLU({})", input.data()),
             Expr::Add(left, right) => write!(f, "= {} + {}", left.data(), right.data()),
             Expr::Mul(left, right) => write!(f, "= {} * {}", left.data(), right.data()),
-            Expr::Const(v) => write!(f, "{}", v.data()),
-            Expr::Leaf => Result::Ok(()),
+            Expr::Leaf => write!(f, "Leaf"),
         }
     }
 }
 
-fn relu(v: Data) -> Data {
-    if v > 0. {
-        v
-    } else {
-        0.
-    }
-}
-
-pub fn topological_sort(v: &Node) -> Vec<&Node> {
-    let mut topo: Vec<&Node> = vec![];
+pub fn topological_sort(v: &Node) -> Vec<Node> {
+    let mut topo: Vec<Node> = vec![];
     let mut visited = HashSet::<usize>::new();
-    let mut stack: Vec<&Node> = vec![];
+    let mut stack: Vec<Node> = vec![];
 
-    stack.push(v);
+    stack.push(v.clone());
     visited.insert(v.id);
 
     while stack.len() > 0 {
         // last is guaranteed to be Some
         // due to the condition in the line above
-        let head = *stack.last().unwrap();
+        let head = stack.last().unwrap().clone();
         let inputs = head.expr.get_inputs();
         let next = inputs.iter().find(|c| !visited.contains(&c.id));
+
         if let Some(h) = next {
-            stack.push(h);
+            stack.push((*h).clone());
             visited.insert(h.id);
             continue;
         }
-        topo.push(head);
-        stack.pop();
+        topo.push(stack.pop().unwrap());
     }
     topo
 }
@@ -128,8 +141,8 @@ impl Value {
         Value::make(v, Box::new(Expr::Leaf))
     }
 
-    pub fn from_op(v: Data, op: Box<dyn Backprop>) -> Value {
-        Value::make(v, op)
+    pub fn from_op(op: Box<dyn Backprop>) -> Value {
+        Value::make(op.eval(), op)
     }
 
     pub fn grad(&self) -> Data {
@@ -141,7 +154,7 @@ impl Value {
     }
 
     pub fn set_grad(&self, grad: Data) {
-        *self.grad.borrow_mut() = grad;
+        *(self.grad.borrow_mut()) = grad;
     }
 
     pub fn data(&self) -> Data {
@@ -149,7 +162,21 @@ impl Value {
     }
 
     pub fn update(&self) {
-        *(self.data.borrow_mut()) += self.grad();
+        let cur = *self.data.borrow();
+        self.data.replace(cur - self.grad() * 0.01);
+    }
+
+    pub fn set(&self, data: Data) {
+        self.data.replace(data);
+    }
+
+    pub fn eval(&self) {
+        let new_data = if self.expr.is_leaf() {
+            self.data()
+        } else {
+            self.expr.eval()
+        };
+        self.data.replace(new_data);
     }
 
     pub fn backward(&self) {
@@ -162,8 +189,9 @@ impl fmt::Display for Node {
         let grad = self.grad.borrow();
         write!(
             f,
-            "{} => Value({} {}, grad={})",
+            "{}[#{}] => Value({} {}, grad={})",
             self.name,
+            self.id,
             self.data(),
             self.expr,
             grad
@@ -173,8 +201,9 @@ impl fmt::Display for Node {
 
 impl Default for Node {
     fn default() -> Self {
+        let node = Rc::new(Value::new(0.));
         Self {
-            node: Rc::new(Value::new(0.)),
+            node,
             name: Default::default(),
             train_state: None,
         }
@@ -195,8 +224,7 @@ impl Node {
     }
 
     pub fn from(v: Value) -> Node {
-        let name = v.id.to_string();
-        Node::make(v, name)
+        Node::make(v, "".to_string())
     }
 
     pub fn named(v: Data, name: &str) -> Node {
@@ -211,18 +239,8 @@ impl Node {
         }
     }
 
-    pub fn constant(&self) -> Node {
-        Node::from(Value::from_op(
-            self.data(),
-            Box::new(Expr::Const(self.clone())),
-        ))
-    }
-
     pub fn relu(&self) -> Node {
-        Node::from(Value::from_op(
-            relu(self.data()),
-            Box::new(Expr::Relu(self.clone())),
-        ))
+        Node::from(Value::from_op(Box::new(Expr::Relu(self.clone()))))
     }
 
     pub fn backward(&mut self) {
@@ -240,6 +258,10 @@ impl Node {
         }
     }
 
+    pub fn set(&self, data: Data) {
+        self.node.set(data);
+    }
+
     pub fn update(&self) {
         let topo = self.train_state.as_deref().unwrap();
         for v in topo.iter() {
@@ -247,9 +269,17 @@ impl Node {
         }
     }
 
+    pub fn forward(&self) {
+        let topo = self.train_state.as_deref().unwrap();
+        for v in topo {
+            v.node.set_grad(0.);
+            v.node.eval();
+        }
+    }
+
     pub fn mark_output(&mut self) {
         let sorted = topological_sort(self);
-        self.train_state = Some(sorted.iter().map(|n| n.to_owned().clone()).collect());
+        self.train_state = Some(sorted.iter().map(|n| n.clone()).collect());
     }
 }
 
@@ -284,10 +314,10 @@ impl ops::Mul<&Node> for Node {
 impl ops::Mul for &Node {
     type Output = Node;
     fn mul(self, _rhs: &Node) -> Node {
-        Node::from(Value::from_op(
-            self.data() * _rhs.data(),
-            Box::new(Expr::Mul(self.clone(), _rhs.clone())),
-        ))
+        Node::from(Value::from_op(Box::new(Expr::Mul(
+            self.clone(),
+            _rhs.clone(),
+        ))))
     }
 }
 
@@ -329,10 +359,10 @@ impl ops::Add<&Node> for Node {
 impl ops::Add for &Node {
     type Output = Node;
     fn add(self, _rhs: &Node) -> Node {
-        Node::from(Value::from_op(
-            self.data() + _rhs.data(),
-            Box::new(Expr::Add(self.clone(), _rhs.clone())),
-        ))
+        Node::from(Value::from_op(Box::new(Expr::Add(
+            self.clone(),
+            _rhs.clone(),
+        ))))
     }
 }
 
@@ -347,6 +377,13 @@ impl ops::Add<f64> for Node {
     type Output = Node;
     fn add(self, _rhs: f64) -> Node {
         &self + _rhs
+    }
+}
+
+impl ops::Neg for &Node {
+    type Output = Node;
+    fn neg(self) -> Node {
+        self * -1.
     }
 }
 
