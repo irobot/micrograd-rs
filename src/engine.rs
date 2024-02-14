@@ -2,7 +2,6 @@ use std::{
     cell::RefCell,
     collections::HashSet,
     fmt::{self, Debug, Display},
-    iter::Sum,
     ops::{self, Deref},
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
@@ -334,6 +333,7 @@ impl Node {
 
     pub fn mark_output(&mut self) {
         let sorted = topological_sort(self);
+        // println!("Marked output for {} nodes", sorted.len());
         self.train_state = Some(sorted.iter().map(|n| n.clone()).collect());
     }
 }
@@ -342,7 +342,7 @@ impl<'a> std::iter::Sum<&'a Node> for Node {
     fn sum<I>(iter: I) -> Self 
         where I: Iterator<Item = &'a Self>
     {
-        iter.fold(Node::new(0.), |acc, n| (acc + n))
+        Node::from_op(Box::new(Expr::Sum(iter.map(|i| i.clone()).collect())))
     }
 }
 
@@ -350,7 +350,7 @@ impl std::iter::Sum for Node {
     fn sum<I>(iter: I) -> Self 
         where I: Iterator<Item = Self>
     {
-        iter.fold(Node::new(0.), |acc, n| (acc + n))
+        Node::from_op(Box::new(Expr::Sum(iter.collect())))
     }
 }
 
