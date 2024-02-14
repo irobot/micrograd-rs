@@ -1,10 +1,18 @@
+global id_gen
+id_gen = 1
 
 class Value:
     """ stores a single scalar value and its gradient """
 
     def __init__(self, data, _children=(), _op=''):
+        global id_gen
+        self.id = id_gen
+        self.cid = (-1, -1)
+        id_gen += 1
         self.data = data
         self.grad = 0
+        self.prev = _children
+        self.op = _op
         # internal variables used for autograd graph construction
         self._backward = lambda: None
         self._prev = set(_children)
@@ -19,6 +27,19 @@ class Value:
             other.grad += out.grad
         out._backward = _backward
 
+        return out
+    
+    def sumv(inputs):
+        out = Value(sum(v.data for v in inputs), inputs, 'sum')
+
+        def _backward():
+            arr = list(reversed(inputs))
+            if len(arr) > 0:
+                arr[0].grad += out.grad
+            for (a, b) in zip(arr, arr[1:]):
+                b.grad += a.grad
+
+        out._backward = _backward
         return out
 
     def __mul__(self, other):

@@ -1,6 +1,13 @@
 import random
 from micrograd.engine import Value
 
+global _use_sumv
+_use_sumv=True
+
+def enable_sumv(enable):
+    global _use_sumv
+    _use_sumv = enable
+
 class Module:
 
     def zero_grad(self):
@@ -12,25 +19,49 @@ class Module:
 
 class Neuron(Module):
 
-    def __init__(self, nin, nonlin=True):
+    def __init__(self, id, nin, nonlin=True):
+        self.id = id
         self.w = [Value(random.uniform(-1,1)) for _ in range(nin)]
         self.b = Value(0)
+        for v in self.w:
+            v.cid = id
+        self.b.cid = id
         self.nonlin = nonlin
 
     def __call__(self, x):
-        act = sum((wi*xi for wi,xi in zip(self.w, x)), self.b)
-        return act.relu() if self.nonlin else act
+        weighted = [wi*xi for wi,xi in zip(self.w, x)]
+        global _use_sumv
+        act = (
+            sum(weighted, self.b),
+            Value.sumv(weighted) + self.b,
+        )[_use_sumv]
+        out = act.relu() if self.nonlin else act
+        vset = set([v.id for v in [self.b] + x + self.w])
+        for v in vset:
+            if isinstance(v, Value):
+                v.cid = self.id
+        out.cid = self.id
+        def tag(n):
+            if isinstance(n, Value):
+                n.cid = self.id
+            for v in n.prev:
+                if not n.id in vset:
+                    tag(v)
+
+        tag(out)
+        return out
 
     def parameters(self):
         return self.w + [self.b]
 
     def __repr__(self):
-        return f"{'ReLU' if self.nonlin else 'Linear'}Neuron({len(self.w)})"
+        return f"{'ReLU' if self.nonlin else 'Linear'}Neuron([{self.id}]{len(self.w)})"
 
 class Layer(Module):
 
-    def __init__(self, nin, nout, **kwargs):
-        self.neurons = [Neuron(nin, **kwargs) for _ in range(nout)]
+    def __init__(self, id, nin, nout, **kwargs):
+        self.id = id
+        self.neurons = [Neuron((id, i), nin, **kwargs) for i in range(nout)]
 
     def __call__(self, x):
         out = [n(x) for n in self.neurons]
@@ -46,7 +77,7 @@ class MLP(Module):
 
     def __init__(self, nin, nouts):
         sz = [nin] + nouts
-        self.layers = [Layer(sz[i], sz[i+1], nonlin=i!=len(nouts)-1) for i in range(len(nouts))]
+        self.layers = [Layer(i, sz[i], sz[i+1], nonlin=i!=len(nouts)-1) for i in range(len(nouts))]
 
     def __call__(self, x):
         for layer in self.layers:

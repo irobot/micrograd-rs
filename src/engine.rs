@@ -1,7 +1,8 @@
 use std::{
     cell::RefCell,
     collections::HashSet,
-    fmt::{self, Display},
+    fmt::{self, Debug, Display},
+    iter::Sum,
     ops::{self, Deref},
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
@@ -9,32 +10,41 @@ use std::{
 
 pub type Data = f64;
 
+// (layer id, neuron id)
+pub type NeuronId = (usize, usize);
+
+#[derive(Debug)]
 pub struct Value {
     pub id: usize,
+    pub nid: Option<NeuronId>,
     pub data: RefCell<Data>,
     pub grad: RefCell<Data>,
     pub expr: Box<dyn Backprop>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Node {
     pub node: Rc<Value>,
     pub name: String,
+    pub node_type: String,
     pub train_state: Option<Vec<Node>>,
 }
 
+#[derive(Debug)]
 pub enum Expr {
     Leaf,
     Add(Node, Node),
     Mul(Node, Node),
+    Pow(Node, Node),
     Relu(Node),
 }
 
-pub trait Backprop: Display {
+pub trait Backprop: Display + Debug {
     fn eval(&self) -> Data;
     fn backward(&self, grad: Data);
     fn get_inputs(&self) -> Vec<&Node>;
     fn is_leaf(&self) -> bool;
+    fn op_name(&self) -> &'static str;
 }
 
 impl Backprop for Expr {
@@ -42,6 +52,7 @@ impl Backprop for Expr {
         match self {
             Expr::Add(left, right) => left.data() + right.data(),
             Expr::Mul(left, right) => left.data() * right.data(),
+            Expr::Pow(left, right) => f64::powf(left.data(), right.data()),
             Expr::Relu(inp) => {
                 if inp.data() > 0. {
                     inp.data()
@@ -50,6 +61,16 @@ impl Backprop for Expr {
                 }
             }
             Expr::Leaf => 0.,
+        }
+    }
+
+    fn op_name(&self) -> &'static str {
+        match self {
+            Expr::Add(_, _) => "+",
+            Expr::Mul(_, _) => "*",
+            Expr::Pow(_, _) => "^",
+            Expr::Relu(_) => "relu",
+            Expr::Leaf => "[leaf]",
         }
     }
 
@@ -70,8 +91,12 @@ impl Backprop for Expr {
                 left.add_grad(grad * right.data());
                 right.add_grad(grad * left.data());
             }
+            Expr::Pow(left, right) => {
+                let (l, r) = (left.data(), right.data());
+                left.add_grad(grad * r * f64::powf(l, r - 1.));
+            }
             Expr::Relu(input) => {
-                let d = if input.data() >= 0. { 1. } else { 0. };
+                let d = if input.data() > 0. { 1. } else { 0. };
                 input.add_grad(grad * d)
             }
             Expr::Leaf => (),
@@ -82,6 +107,7 @@ impl Backprop for Expr {
         match self {
             Expr::Add(left, right) => vec![left, right],
             Expr::Mul(left, right) => vec![left, right],
+            Expr::Pow(left, right) => vec![left, right],
             Expr::Relu(input) => vec![input],
             Expr::Leaf => vec![],
         }
@@ -91,10 +117,11 @@ impl Backprop for Expr {
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Expr::Relu(input) => write!(f, "= ReLU({})", input.data()),
-            Expr::Add(left, right) => write!(f, "= {} + {}", left.data(), right.data()),
-            Expr::Mul(left, right) => write!(f, "= {} * {}", left.data(), right.data()),
-            Expr::Leaf => write!(f, "Leaf"),
+            Expr::Relu(input) => write!(f, "= ReLU({})", short_fmt(input)),
+            Expr::Add(left, right) => write!(f, "= {} + {}", short_fmt(left), short_fmt(right)),
+            Expr::Mul(left, right) => write!(f, "= {} * {}", short_fmt(left), short_fmt(right)),
+            Expr::Pow(left, right) => write!(f, "= {}^{}", short_fmt(left), short_fmt(right)),
+            Expr::Leaf => write!(f, "[Leaf]"),
         }
     }
 }
@@ -127,22 +154,28 @@ pub fn topological_sort(v: &Node) -> Vec<Node> {
 static OBJECT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 impl Value {
-    pub fn make(data: Data, expr: Box<dyn Backprop>) -> Value {
+    pub fn make(data: Data, expr: Box<dyn Backprop>, nid: Option<(usize, usize)>) -> Value {
         let id = OBJECT_COUNTER.fetch_add(1, Ordering::SeqCst);
         Value {
             id,
             data: RefCell::new(data),
             grad: RefCell::new(0.),
             expr,
+            nid,
         }
     }
 
     pub fn new(v: Data) -> Value {
-        Value::make(v, Box::new(Expr::Leaf))
+        Value::make(v, Box::new(Expr::Leaf), None)
+    }
+
+    // A trainable parameter (such as a weight or a bias)
+    pub fn from_neuron_parameter(v: Data, nid: Option<NeuronId>) -> Value {
+        Value::make(v, Box::new(Expr::Leaf), nid)
     }
 
     pub fn from_op(op: Box<dyn Backprop>) -> Value {
-        Value::make(op.eval(), op)
+        Value::make(op.eval(), op, None)
     }
 
     pub fn grad(&self) -> Data {
@@ -161,9 +194,9 @@ impl Value {
         *self.data.borrow()
     }
 
-    pub fn update(&self) {
+    pub fn update(&self, learning_rate: f64) {
         let cur = *self.data.borrow();
-        self.data.replace(cur - self.grad() * 0.01);
+        self.data.replace(cur - self.grad() * learning_rate);
     }
 
     pub fn set(&self, data: Data) {
@@ -184,6 +217,11 @@ impl Value {
     }
 }
 
+fn short_fmt(node: &Node) -> String {
+    let grad = node.grad.borrow();
+    format!("(#{}|{}||{})", node.id, node.data(), grad,)
+}
+
 impl fmt::Display for Node {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let grad = self.grad.borrow();
@@ -201,46 +239,51 @@ impl fmt::Display for Node {
 
 impl Default for Node {
     fn default() -> Self {
-        let node = Rc::new(Value::new(0.));
-        Self {
-            node,
-            name: Default::default(),
-            train_state: None,
-        }
+        Node::new(0.)
     }
 }
 
 impl Node {
     pub fn new(v: Data) -> Node {
-        Node::from(Value::new(v))
+        Node::from_value(Value::new(v))
     }
 
-    fn make(v: Value, name: String) -> Node {
+    pub fn make(v: Value, name: &str, node_type: &str) -> Node {
         Node {
             node: Rc::new(v),
             name: name.to_string(),
+            node_type: node_type.to_string(),
             train_state: None,
         }
     }
 
-    pub fn from(v: Value) -> Node {
-        Node::make(v, "".to_string())
+    pub fn from_value(v: Value) -> Node {
+        Node::make(v, "", "")
+    }
+
+    pub fn from_op(op: Box<dyn Backprop>) -> Node {
+        Node::make(Value::from_op(op), "", "op")
     }
 
     pub fn named(v: Data, name: &str) -> Node {
-        Node::make(Value::new(v), name.to_string())
+        Node::make(Value::new(v), name, "")
     }
 
     pub fn name(&self, name: &str) -> Node {
         Node {
             node: self.node.clone(),
             name: name.to_string(),
+            node_type: "".to_string(),
             train_state: None,
         }
     }
 
     pub fn relu(&self) -> Node {
-        Node::from(Value::from_op(Box::new(Expr::Relu(self.clone()))))
+        Node::from_op(Box::new(Expr::Relu(self.clone())))
+    }
+
+    pub fn pow(&self, _rhs: &Node) -> Node {
+        Node::from_op(Box::new(Expr::Pow(self.clone(), _rhs.clone())))
     }
 
     pub fn backward(&mut self) {
@@ -262,24 +305,36 @@ impl Node {
         self.node.set(data);
     }
 
-    pub fn update(&self) {
+    pub fn update(&self, learning_rate: f64) {
         let topo = self.train_state.as_deref().unwrap();
         for v in topo.iter() {
-            v.node.update();
+            v.node.update(learning_rate);
         }
     }
 
     pub fn forward(&self) {
         let topo = self.train_state.as_deref().unwrap();
         for v in topo {
-            v.node.set_grad(0.);
             v.node.eval();
+        }
+    }
+
+    pub fn zero_grad(&self) {
+        let topo = self.train_state.as_deref().unwrap_or_default();
+        for v in topo {
+            v.node.set_grad(0.);
         }
     }
 
     pub fn mark_output(&mut self) {
         let sorted = topological_sort(self);
         self.train_state = Some(sorted.iter().map(|n| n.clone()).collect());
+    }
+}
+
+impl Sum for Node {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.reduce(|acc, n| (acc + n)).unwrap_or(Node::new(0.))
     }
 }
 
@@ -314,17 +369,14 @@ impl ops::Mul<&Node> for Node {
 impl ops::Mul for &Node {
     type Output = Node;
     fn mul(self, _rhs: &Node) -> Node {
-        Node::from(Value::from_op(Box::new(Expr::Mul(
-            self.clone(),
-            _rhs.clone(),
-        ))))
+        Node::from_op(Box::new(Expr::Mul(self.clone(), _rhs.clone())))
     }
 }
 
 impl ops::Mul<f64> for &Node {
     type Output = Node;
     fn mul(self, _rhs: f64) -> Node {
-        self * &Node::from(Value::new(_rhs))
+        self * &Node::from_value(Value::new(_rhs))
     }
 }
 
@@ -332,6 +384,13 @@ impl ops::Mul<f64> for Node {
     type Output = Node;
     fn mul(self, _rhs: f64) -> Node {
         &self * _rhs
+    }
+}
+
+impl ops::Div for &Node {
+    type Output = Node;
+    fn div(self, _rhs: &Node) -> Node {
+        self * _rhs.pow(&Node::new(-1.))
     }
 }
 
@@ -359,17 +418,14 @@ impl ops::Add<&Node> for Node {
 impl ops::Add for &Node {
     type Output = Node;
     fn add(self, _rhs: &Node) -> Node {
-        Node::from(Value::from_op(Box::new(Expr::Add(
-            self.clone(),
-            _rhs.clone(),
-        ))))
+        Node::from_op(Box::new(Expr::Add(self.clone(), _rhs.clone())))
     }
 }
 
 impl ops::Add<f64> for &Node {
     type Output = Node;
     fn add(self, _rhs: f64) -> Node {
-        self + &Node::from(Value::new(_rhs))
+        self + &Node::from_value(Value::new(_rhs))
     }
 }
 
@@ -384,6 +440,13 @@ impl ops::Neg for &Node {
     type Output = Node;
     fn neg(self) -> Node {
         self * -1.
+    }
+}
+
+impl ops::Neg for Node {
+    type Output = Node;
+    fn neg(self) -> Node {
+        -&self
     }
 }
 
@@ -437,7 +500,7 @@ mod test {
         let z = ((&x * 2.0).name("z0") + (&x + 2.).name("z1")).name("z");
         let q = (&z.relu() + (&z * &x).name("q1")).name("q");
         let h = ((&z * &z).relu()).name("h");
-        let mut y = ((h + &q).name("y0") + (q * &x).name("y1")).name("y");
+        let mut y = ((h + &q).name("y0") + (&q * &x).name("y1")).name("y");
         y.mark_output();
         y.backward();
 
@@ -445,5 +508,25 @@ mod test {
         assert_eq!(y.data(), -20.);
         // backward pass went well
         assert_eq!(x.grad(), 46.);
+        assert_eq!(q.grad(), -3.);
+    }
+
+    #[test]
+    fn test_value_pow() {
+        let mut pow = Node::new(2.).pow(&Node::new(3.));
+        assert_eq!(pow.data(), 8.);
+        pow.mark_output();
+        pow.backward();
+        assert_eq!(pow.grad(), 1.);
+
+        let pow = Node::new(2.).pow(&Node::new(-1.));
+        assert_eq!(pow.data(), 0.5);
+    }
+
+    #[test]
+    fn test_node_iter_sum() {
+        let nodes = vec![Node::new(1.), Node::new(2.), Node::new(3.)];
+        let sum = nodes.into_iter().sum::<Node>();
+        assert_eq!(sum.data(), 6.);
     }
 }
