@@ -33,11 +33,8 @@ class Value:
         out = Value(sum(v.data for v in inputs), inputs, 'sum')
 
         def _backward():
-            arr = list(reversed(inputs))
-            if len(arr) > 0:
-                arr[0].grad += out.grad
-            for (a, b) in zip(arr, arr[1:]):
-                b.grad += a.grad
+            for i in inputs:
+                i.grad += out.grad
 
         out._backward = _backward
         return out

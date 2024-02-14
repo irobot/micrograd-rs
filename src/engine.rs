@@ -37,6 +37,7 @@ pub enum Expr {
     Mul(Node, Node),
     Pow(Node, Node),
     Relu(Node),
+    Sum(Vec<Node>),
 }
 
 pub trait Backprop: Display + Debug {
@@ -61,6 +62,7 @@ impl Backprop for Expr {
                 }
             }
             Expr::Leaf => 0.,
+            Expr::Sum(inputs) => inputs.iter().map(|i| i.data()).sum()
         }
     }
 
@@ -71,6 +73,7 @@ impl Backprop for Expr {
             Expr::Pow(_, _) => "^",
             Expr::Relu(_) => "relu",
             Expr::Leaf => "[leaf]",
+            Expr::Sum(_) => "sum",
         }
     }
 
@@ -100,6 +103,7 @@ impl Backprop for Expr {
                 input.add_grad(grad * d)
             }
             Expr::Leaf => (),
+            Expr::Sum(inputs) => for i in inputs.iter() { i.add_grad(grad); },
         }
     }
 
@@ -110,6 +114,7 @@ impl Backprop for Expr {
             Expr::Pow(left, right) => vec![left, right],
             Expr::Relu(input) => vec![input],
             Expr::Leaf => vec![],
+            Expr::Sum(inputs) => inputs.iter().collect(),
         }
     }
 }
@@ -122,6 +127,7 @@ impl fmt::Display for Expr {
             Expr::Mul(left, right) => write!(f, "= {} * {}", short_fmt(left), short_fmt(right)),
             Expr::Pow(left, right) => write!(f, "= {}^{}", short_fmt(left), short_fmt(right)),
             Expr::Leaf => write!(f, "[Leaf]"),
+            Expr::Sum(_) => write!(f, "= Sum()"),
         }
     }
 }
@@ -332,9 +338,19 @@ impl Node {
     }
 }
 
-impl Sum for Node {
-    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.reduce(|acc, n| (acc + n)).unwrap_or(Node::new(0.))
+impl<'a> std::iter::Sum<&'a Node> for Node {
+    fn sum<I>(iter: I) -> Self 
+        where I: Iterator<Item = &'a Self>
+    {
+        iter.fold(Node::new(0.), |acc, n| (acc + n))
+    }
+}
+
+impl std::iter::Sum for Node {
+    fn sum<I>(iter: I) -> Self 
+        where I: Iterator<Item = Self>
+    {
+        iter.fold(Node::new(0.), |acc, n| (acc + n))
     }
 }
 
@@ -526,7 +542,7 @@ mod test {
     #[test]
     fn test_node_iter_sum() {
         let nodes = vec![Node::new(1.), Node::new(2.), Node::new(3.)];
-        let sum = nodes.into_iter().sum::<Node>();
+        let sum = nodes.iter().sum::<Node>();
         assert_eq!(sum.data(), 6.);
     }
 }

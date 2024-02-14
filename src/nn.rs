@@ -41,8 +41,7 @@ impl Neuron {
         let linear_output = weighted
             .iter()
             .map(|(input, weight)| *weight * *input)
-            .reduce(|acc, v| acc + v)
-            .unwrap()
+            .sum::<Node>()
             + &self.bias;
 
         if let Some(nonlin) = nonlinearity {
@@ -302,7 +301,7 @@ pub fn train(
             data_losses.push(loss);
         }
 
-        let data_loss = Node::sum(data_losses.into_iter()) * (1. / ts.len() as f64);
+        let data_loss = Node::sum(data_losses.iter()) * (1. / ts.len() as f64);
         let mut total_loss = &reg_loss + &data_loss;
         total_loss.mark_output();
         total_loss.forward();
