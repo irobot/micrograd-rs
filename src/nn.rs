@@ -59,7 +59,6 @@ impl Neuron {
         Neuron::from_inputs(&make_random_nodes(input_count, "inp"))
     }
 
-    #[allow(dead_code)]
     pub fn from_inputs(inputs: &Vec<Node>) -> Neuron {
         let weights = make_random_nodes(inputs.len(), "w");
         let bias = make_random_nodes(1, "b")[0].clone();

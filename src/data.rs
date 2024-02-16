@@ -1,12 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::engine::NeuronId;
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ValueInit {
     pub id: u32,
     pub data: f64,
-    pub nid: Option<NeuronId>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

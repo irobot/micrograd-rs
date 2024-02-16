@@ -7,7 +7,6 @@ class Value:
     def __init__(self, data, _children=(), _op=''):
         global id_gen
         self.id = id_gen
-        self.cid = (-1, -1)
         id_gen += 1
         self.data = data
         self.grad = 0
@@ -29,6 +28,9 @@ class Value:
 
         return out
     
+    # Generalized version of the __add__ operation that takes in
+    # > 2 inputs. This results in substantially smaller number of
+    # Value nodes that are otherwise created per input pair.
     def sumv(inputs):
         out = Value(sum(v.data for v in inputs), inputs, 'sum')
 

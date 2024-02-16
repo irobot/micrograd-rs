@@ -7,7 +7,7 @@ use crate::{
         ValueInit,
     },
     engine::{Expr, NeuronId, Node, Value},
-    nn::{Layer, Nonlinearity, MLP},
+    nn::{Layer, MLP},
 };
 
 // Translate serialized ids to materialized `Value` ids
@@ -19,8 +19,7 @@ pub trait FromInit<I> {
 
 impl FromInit<ValueInit> for Node {
     fn from_init(init: &ValueInit, id_map: &mut IdMap) -> Self {
-        let nid = init.nid;
-        let node = Node::from_value(Value::from_neuron_parameter(init.data, nid));
+        let node = Node::from_value(Value::from_neuron_parameter(init.data, None));
         id_map.insert(init.id, node.clone());
         node
     }
@@ -105,12 +104,7 @@ fn get_data(node_init: &NodeInit, label: &str) -> f64 {
     }
 }
 
-fn from_neuron_init(
-    nid: NeuronId,
-    neuron_init: &NeuronInit,
-    inputs: &Vec<Node>,
-    nonlin: Nonlinearity,
-) -> Neuron {
+fn from_neuron_init(nid: NeuronId, neuron_init: &NeuronInit) -> Neuron {
     let weights = neuron_init
         .weights
         .iter()
@@ -128,50 +122,25 @@ fn from_neuron_init(
     Neuron::new(weights, bias)
 }
 
-pub fn from_layer_init(
-    layer_idx: usize,
-    layer_init: &LayerInit,
-    inputs: &Vec<Node>,
-    nonlin: Nonlinearity,
-) -> Layer {
+pub fn from_layer_init(layer_idx: usize, layer_init: &LayerInit) -> Layer {
     let mut neurons = vec![];
     for idx in 0..layer_init.neurons.len() {
         let ni = &layer_init.neurons[idx];
-        neurons.push(Rc::new(from_neuron_init(
-            (layer_idx, idx),
-            ni,
-            inputs,
-            nonlin,
-        )));
+        neurons.push(Rc::new(from_neuron_init((layer_idx, idx), ni)));
     }
 
     Layer(neurons)
 }
 
-impl FromInit<MLPInit> for MLP {
-    fn from_init(mlp_init: &MLPInit, id_map: &mut IdMap) -> MLP {
-        let inputs: Vec<Node> = mlp_init.inputs.iter().map(|_| Node::new(0.)).collect();
-
-        let mut layers = vec![];
-        let layer_count = mlp_init.layers.len();
-        let prev_outputs = inputs.clone();
-        for layer_idx in 0..layer_count {
-            let nonlin: Nonlinearity = if layer_idx < layer_count - 1 {
-                Some(Node::relu)
-            } else {
-                None
-            };
-            let layer = from_layer_init(
-                layer_idx,
-                &mlp_init.layers[layer_idx],
-                &prev_outputs,
-                nonlin,
-            );
-            layers.push(layer);
-        }
-
-        MLP { layers }
+pub fn from_mlp_init(mlp_init: &MLPInit) -> MLP {
+    let mut layers = vec![];
+    let layer_count = mlp_init.layers.len();
+    for layer_idx in 0..layer_count {
+        let layer = from_layer_init(layer_idx, &mlp_init.layers[layer_idx]);
+        layers.push(layer);
     }
+
+    MLP { layers }
 }
 
 #[allow(dead_code)]
@@ -185,8 +154,7 @@ pub fn read_json_graph(filename: &str) -> Node {
 pub fn read_json_mlp(filename: &str) -> MLP {
     let file = std::fs::File::open(filename).expect("file should open read only");
     let mlp_init = serde_json::from_reader(file).expect("file should be proper JSON");
-    let mut id_map = IdMap::new();
-    MLP::from_init(&mlp_init, &mut id_map)
+    from_mlp_init(&mlp_init)
 }
 
 pub fn read_json_training_data(filename: &str) -> TrainingSet {

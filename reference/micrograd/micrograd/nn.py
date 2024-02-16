@@ -2,8 +2,10 @@ import random
 from micrograd.engine import Value
 
 global _use_sumv
-_use_sumv=True
+_use_sumv=False
 
+# Enable to use the sumv optimization,
+# instead of pairwise "+" (__add__)
 def enable_sumv(enable):
     global _use_sumv
     _use_sumv = enable
@@ -23,33 +25,19 @@ class Neuron(Module):
         self.id = id
         self.w = [Value(random.uniform(-1,1)) for _ in range(nin)]
         self.b = Value(0)
-        for v in self.w:
-            v.cid = id
-        self.b.cid = id
         self.nonlin = nonlin
 
     def __call__(self, x):
-        weighted = [wi*xi for wi,xi in zip(self.w, x)]
         global _use_sumv
+
+        weighted = [wi*xi for wi,xi in zip(self.w, x)]
+
         act = (
             sum(weighted, self.b),
             Value.sumv(weighted) + self.b,
         )[_use_sumv]
-        out = act.relu() if self.nonlin else act
-        vset = set([v.id for v in [self.b] + x + self.w])
-        for v in vset:
-            if isinstance(v, Value):
-                v.cid = self.id
-        out.cid = self.id
-        def tag(n):
-            if isinstance(n, Value):
-                n.cid = self.id
-            for v in n.prev:
-                if not n.id in vset:
-                    tag(v)
 
-        tag(out)
-        return out
+        return act.relu() if self.nonlin else act
 
     def parameters(self):
         return self.w + [self.b]
