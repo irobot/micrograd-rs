@@ -156,12 +156,18 @@ pub fn topological_sort(v: &Node) -> Vec<Node> {
     topo
 }
 
+/**
+ Only used for debugging purposes
+
+ @todo Remove
+ */
 static OBJECT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 impl Value {
     pub fn make(data: Data, expr: Box<dyn Backprop>, nid: Option<(usize, usize)>) -> Value {
         let id = OBJECT_COUNTER.fetch_add(1, Ordering::SeqCst);
         Value {
+            /* Only useful in debugging. @todo remove */
             id,
             data: RefCell::new(data),
             grad: RefCell::new(0.),
@@ -333,7 +339,6 @@ impl Node {
 
     pub fn mark_output(&mut self) {
         let sorted = topological_sort(self);
-        // println!("Marked output for {} nodes", sorted.len());
         self.train_state = Some(sorted.iter().map(|n| n.clone()).collect());
     }
 }
